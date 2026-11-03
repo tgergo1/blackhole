@@ -208,6 +208,7 @@ export class Renderer {
     gl.uniform2f(u.uLUTRange, LUT_LOG_T_MIN, LUT_LOG_T_MAX);
     gl.uniform1f(u.uLUTSize, this.lutSize);
     gl.uniform1i(u.uDebug, debug ? 1 : 0);
+    gl.uniform1f(u.uRadianceScale, d.baseExposure);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.lut);
     gl.uniform1i(u.uLUT, 0);
@@ -252,7 +253,7 @@ export class Renderer {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, img.tex);
     gl.uniform1i(this.display.u.uImage, 0);
-    gl.uniform1f(this.display.u.uExposure, this.derived.baseExposure * Math.pow(2, s.exposureEV));
+    gl.uniform1f(this.display.u.uExposure, Math.pow(2, s.exposureEV));
     gl.uniform2f(this.display.u.uDisplaySize, cw, ch);
     gl.uniform2f(this.display.u.uImageSize, w, h);
     gl.drawArrays(gl.TRIANGLES, 0, 3);

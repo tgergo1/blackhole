@@ -42,6 +42,7 @@ uniform float uLUTSize;
 uniform sampler2D uPrev;   // running mean of previous samples
 uniform float uSampleIndex;
 uniform int uDebug;        // 1: output raw ray data instead of colour
+uniform float uRadianceScale; // base exposure, applied before storage so half-float targets cannot overflow
 
 out vec4 outColor;
 
@@ -335,6 +336,7 @@ void main() {
     col = sky(skyDir, gOut);
   }
 
+  col = min(col * uRadianceScale, vec3(6e4)); // keep within half-float range
   if (uSampleIndex < 0.5) { outColor = vec4(col, 1.0); return; }
   vec3 prev = texelFetch(uPrev, ivec2(gl_FragCoord.xy), 0).rgb;
   outColor = vec4(mix(prev, col, 1.0 / (uSampleIndex + 1.0)), 1.0);
