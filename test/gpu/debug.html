@@ -3,10 +3,17 @@
 <canvas id="c" width="64" height="64"></canvas>
 <script type="module">
   import { Renderer } from '../../src/render/renderer.js';
-  window.renderDebug = (scene, w, h) => {
+  window.renderDebug = (scene, w, h, objects = null, mode = 1) => {
     const r = new Renderer(document.getElementById('c'));
     r.setScene(scene);
-    return Array.from(r.renderDebug(w, h));
+    if (objects) {
+      r.setObjects({
+        ...objects,
+        grid: new Float32Array(objects.grid), bounds: new Float32Array(objects.bounds),
+        emit: new Float32Array(objects.emit), all: new Float32Array(objects.all), blocks: new Float32Array(objects.blocks),
+      });
+    }
+    return Array.from(r.renderDebug(w, h, mode));
   };
   window.ready = true;
 </script>

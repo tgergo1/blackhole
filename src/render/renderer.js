@@ -5,6 +5,7 @@ import { makeCamera, OBSERVERS } from '../physics/camera.js';
 import { horizons } from '../physics/kerr.js';
 import { iscoRadius, fluxPeak, peakTemperature } from '../physics/disk.js';
 import { buildBlackbodyLUT, LUT_LOG_T_MIN, LUT_LOG_T_MAX, relativeLuminance } from '../physics/color.js';
+import { MAX_OBJECTS, GRID_S, BLOCK, gridRows } from './objects.js';
 
 export const DEFAULT_SCENE = {
   a: 0.94,              // dimensionless spin a/M (negative = retrograde disk)
@@ -71,6 +72,8 @@ export function pageThorneRoots(a) {
 }
 
 /** Everything derived from a scene that the shader needs (pure, testable). */
+const Y_REF_NO_DISK = relativeLuminance(10000);
+
 export function deriveScene(scene) {
   const cam = makeCamera(scene);
   const rIn = iscoRadius(scene.a);
@@ -88,7 +91,9 @@ export function deriveScene(scene) {
     rH: horizons(scene.a).rPlus,
     rEscape: Math.max(5000, 20 * rCam),
     roots: pageThorneRoots(scene.a),
-    baseExposure: 0.6 / yPeak,
+    // With the disk off, exposure no longer follows the disk temperature
+    // (which still scales with mass) but a fixed 10 000 K reference.
+    baseExposure: 0.6 / (scene.diskOn ? yPeak : Y_REF_NO_DISK),
   };
 }
 
@@ -119,6 +124,18 @@ export class Renderer {
     gl.bindTexture(gl.TEXTURE_2D, this.lut);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, lut.size, 1, 0, gl.RGBA, gl.FLOAT, lut.data);
     this.setFilter(gl.NEAREST);
+
+    // Dynamic bodies: RGBA32F grid texture (see objects.js).
+    this.objTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.objTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, GRID_S, gridRows(MAX_OBJECTS), 0, gl.RGBA, gl.FLOAT, null);
+    this.setFilter(gl.NEAREST);
+    this.blockTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.blockTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, Math.ceil(GRID_S / BLOCK), MAX_OBJECTS, 0, gl.RGBA, gl.FLOAT, null);
+    this.setFilter(gl.NEAREST);
+    this.objects = { count: 0 };
+    this.objRefT = 6000;
 
     this.targets = [];
     this.sample = 0;
@@ -168,6 +185,20 @@ export class Renderer {
     this.sample = 0;
   }
 
+  /** Upload resampled body world lines (ObjectField.snapshot()). Restarts accumulation. */
+  setObjects(snap) {
+    const gl = this.gl;
+    this.objects = snap;
+    if (snap.count > 0) {
+      gl.bindTexture(gl.TEXTURE_2D, this.objTex);
+      // Only the rows in use.
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, snap.S, snap.count * 5, gl.RGBA, gl.FLOAT, snap.grid.subarray(0, snap.S * 5 * snap.count * 4));
+      gl.bindTexture(gl.TEXTURE_2D, this.blockTex);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, snap.NB, snap.count, gl.RGBA, gl.FLOAT, snap.blocks.subarray(0, snap.NB * snap.count * 4));
+    }
+    this.sample = 0;
+  }
+
   /** Change only post-processing (does not restart accumulation). */
   setExposure(ev) {
     this.scene.exposureEV = ev;
@@ -213,6 +244,27 @@ export class Renderer {
     gl.bindTexture(gl.TEXTURE_2D, this.lut);
     gl.uniform1i(u.uLUT, 0);
     gl.uniform1i(u.uPrev, 1);
+    const o = this.objects;
+    gl.uniform1i(u.uObjCount, o.count || 0);
+    // Bodies are drawn on the disk's absolute radiance scale; with the disk
+    // off, they are referenced to a blackbody at objRefT instead (by default
+    // the hottest body thrown in, so it is not saturated).
+    gl.uniform1f(u.uObjGain, s.diskOn ? 1 : Y_REF_NO_DISK / relativeLuminance(this.objRefT));
+    if (o.count) {
+      gl.uniform1i(u.uObjS, o.S);
+      gl.uniform1f(u.uObjDs, o.ds);
+      gl.uniform1f(u.uObjS0, o.s0);
+      gl.uniform4fv(u['uObjBound[0]'], o.bounds);
+      gl.uniform4fv(u['uObjEmit[0]'], o.emit);
+      gl.uniform4fv(u.uObjAll, o.all);
+    }
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.objTex);
+    gl.uniform1i(u.uObj, 2);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, this.blockTex);
+    gl.uniform1i(u.uObjBlocks, 3);
+    gl.activeTexture(gl.TEXTURE0);
   }
 
   /** Render one more accumulated sample and present. Returns samples so far. */
@@ -260,14 +312,15 @@ export class Renderer {
     return this.sample;
   }
 
-  /** Raw per-pixel ray data (result type, r, g, extra) for validation. */
-  renderDebug(w, h) {
+  /** Raw per-pixel ray data (result type, r, g, extra) for validation; mode 2 = first body hit. */
+  renderDebug(w, h, mode = 1) {
     const gl = this.gl;
     if (!this.floatRT) throw new Error('Debug readback needs EXT_color_buffer_float');
     const t = this.makeTarget(w, h, gl.RGBA32F);
     gl.bindVertexArray(this.vao);
     gl.useProgram(this.trace.p);
     this.bindTraceUniforms(w, h, [0, 0], true);
+    gl.uniform1i(this.trace.u.uDebug, mode);
     gl.uniform1f(this.trace.u.uSampleIndex, 0);
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.lut); // anything but the render target
