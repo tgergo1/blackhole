@@ -1,0 +1,12 @@
+<!doctype html>
+<meta charset="utf-8">
+<canvas id="c" width="64" height="64"></canvas>
+<script type="module">
+  import { Renderer } from '../../src/render/renderer.js';
+  window.renderDebug = (scene, w, h) => {
+    const r = new Renderer(document.getElementById('c'));
+    r.setScene(scene);
+    return Array.from(r.renderDebug(w, h));
+  };
+  window.ready = true;
+</script>

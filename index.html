@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kerr Black Hole</title>
+<link rel="stylesheet" href="src/ui/style.css">
+</head>
+<body>
+<canvas id="view" aria-label="Rendered black hole"></canvas>
+
+<div id="hud" aria-live="polite"></div>
+
+<button id="toggle" aria-expanded="true" aria-controls="panel" title="Show or hide controls">Controls</button>
+<aside id="panel">
+  <h1>Kerr black hole</h1>
+  <p class="sub">General-relativistic ray tracing on the GPU. Drag to orbit, scroll to zoom, shift-drag to look around.</p>
+
+  <label class="row">Preset
+    <select id="preset"></select>
+  </label>
+
+  <fieldset>
+    <legend>Spacetime</legend>
+    <label class="row">Spin a/M <output data-for="a"></output>
+      <input type="range" id="a" min="-0.998" max="0.998" step="0.001"></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Camera</legend>
+    <label class="row">Distance r (M) <output data-for="r"></output>
+      <input type="range" id="r" min="0" max="1" step="0.001" data-log="2.2,1000"></label>
+    <label class="row">Inclination (°) <output data-for="incl"></output>
+      <input type="range" id="incl" min="0" max="180" step="0.1"></label>
+    <label class="row">Field of view (°) <output data-for="fovDeg"></output>
+      <input type="range" id="fovDeg" min="2" max="140" step="0.5"></label>
+    <label class="row">Observer
+      <select id="observer">
+        <option value="zamo">Zero angular momentum (ZAMO)</option>
+        <option value="static">Static (outside ergosphere)</option>
+      </select></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Accretion disk (Novikov–Thorne)</legend>
+    <label class="check"><input type="checkbox" id="diskOn"> Show disk</label>
+    <label class="row">Mass (M☉) <output data-for="massSolar"></output>
+      <input type="range" id="massSolar" min="0" max="11" step="0.01" data-exp10></label>
+    <label class="row">Accretion rate (× Eddington) <output data-for="eddRatio"></output>
+      <input type="range" id="eddRatio" min="-4" max="0" step="0.01" data-exp10></label>
+    <label class="row">Outer radius (M) <output data-for="rOut"></output>
+      <input type="range" id="rOut" min="8" max="200" step="1"></label>
+    <label class="row">Colour correction f<sub>col</sub> <output data-for="fCol"></output>
+      <input type="range" id="fCol" min="1" max="2.5" step="0.01"></label>
+    <label class="check"><input type="checkbox" id="limb"> Limb darkening</label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Image</legend>
+    <label class="row">Background
+      <select id="sky">
+        <option value="1">Stars</option>
+        <option value="2">Lensing grid</option>
+        <option value="0">Black</option>
+      </select></label>
+    <label class="row">Background brightness <output data-for="skyBrightness"></output>
+      <input type="range" id="skyBrightness" min="0" max="10" step="0.05"></label>
+    <label class="row">Exposure (EV) <output data-for="exposureEV"></output>
+      <input type="range" id="exposureEV" min="-8" max="8" step="0.1"></label>
+    <label class="row">Integrator tolerance <output data-for="rtol"></output>
+      <input type="range" id="rtol" min="-6" max="-2.5" step="0.1" data-exp10></label>
+    <label class="row">Resolution <output data-for="resolutionScale"></output>
+      <input type="range" id="resolutionScale" min="0.25" max="1" step="0.05"></label>
+    <div class="buttons">
+      <button id="snapshot" type="button">Save PNG</button>
+      <button id="reset" type="button">Reset view</button>
+    </div>
+  </fieldset>
+
+  <details>
+    <summary>What is being computed</summary>
+    <p>Every pixel follows a null geodesic of the Kerr metric backwards from the camera, integrated in horizon-penetrating Kerr–Schild coordinates with an adaptive Dormand–Prince 5(4) method. The disk is the Novikov–Thorne relativistic thin disk with the Page–Thorne flux; each hit is coloured as a blackbody at temperature <i>gT</i>, where <i>g</i> combines gravitational redshift, Doppler shift and frame dragging. Nothing is faked: beaming, the photon ring, the shadow shape and the higher-order images all come from the geodesics.</p>
+  </details>
+</aside>
+
+<div id="error" hidden></div>
+<script type="module" src="src/ui/main.js"></script>
+</body>
+</html>
