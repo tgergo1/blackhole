@@ -31,6 +31,11 @@ input[type="range"] { accent-color: var(--accent); }
 details { margin-top: 14px; color: var(--muted); }
 summary { cursor: pointer; color: var(--text); }
 #error { position: fixed; left: 50%; top: 16px; transform: translateX(-50%); background: #3a1414; border: 1px solid #a33; color: #fdd; padding: 8px 14px; border-radius: 8px; z-index: 4; max-width: calc(100vw - 32px); }
+#throw { background: #3a2a14; border-color: #8a5a20; }
+.status { margin-top: 10px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.status b { color: var(--text); font-weight: 600; }
+.status .warn { color: #ffcf8a; }
+#fallback { width: 100%; height: auto; margin-top: 8px; background: #11131a; border: 1px solid var(--border); border-radius: 6px; }
 @media (max-width: 700px) {
   #panel { top: 56px; left: 16px; right: 16px; width: auto; }
   #hud { font-size: 11px; }

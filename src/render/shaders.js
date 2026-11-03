@@ -55,7 +55,7 @@ float ksRadius(vec3 x) {
   return sqrt(max(r2, 1e-30));
 }
 
-void geodesicRHS(vec3 x, vec3 p, float E, out vec3 dx, out vec3 dp) {
+void geodesicRHS(vec3 x, vec3 p, float E, out vec3 dx, out vec3 dp, out float dt) {
   float a = uSpinT, a2 = a * a;
   float r = ksRadius(x);
   float r2 = r * r, z2 = x.z * x.z;
@@ -75,6 +75,7 @@ void geodesicRHS(vec3 x, vec3 p, float E, out vec3 dx, out vec3 dp) {
   float c = f * kp;
   dx = p - c * k;
   dp = 0.5 * kp * kp * (dfdr * gradR + vec3(0.0, 0.0, dfdz)) + c * gradK;
+  dt = E + c; // dt'/dλ: mirror coordinate time along the ray
 }
 
 // Project p back onto the null cone H = 0 (removes float32 drift).
@@ -97,10 +98,11 @@ vec3 projectNull(vec3 x, vec3 p, float E) {
 // ---------- Dormand–Prince 5(4) ----------
 void rk4(inout vec3 x, inout vec3 p, float h, float E) {
   vec3 k1x, k1p, k2x, k2p, k3x, k3p, k4x, k4p;
-  geodesicRHS(x, p, E, k1x, k1p);
-  geodesicRHS(x + 0.5 * h * k1x, p + 0.5 * h * k1p, E, k2x, k2p);
-  geodesicRHS(x + 0.5 * h * k2x, p + 0.5 * h * k2p, E, k3x, k3p);
-  geodesicRHS(x + h * k3x, p + h * k3p, E, k4x, k4p);
+  float d1, d2, d3, d4;
+  geodesicRHS(x, p, E, k1x, k1p, d1);
+  geodesicRHS(x + 0.5 * h * k1x, p + 0.5 * h * k1p, E, k2x, k2p, d2);
+  geodesicRHS(x + 0.5 * h * k2x, p + 0.5 * h * k2p, E, k3x, k3p, d3);
+  geodesicRHS(x + h * k3x, p + h * k3p, E, k4x, k4p, d4);
   x += h / 6.0 * (k1x + 2.0 * k2x + 2.0 * k3x + k4x);
   p += h / 6.0 * (k1p + 2.0 * k2p + 2.0 * k3p + k4p);
 }
@@ -210,6 +212,124 @@ vec3 sky(vec3 d, float g) {
   return col * uSkyBrightness;
 }
 
+// ---------- Dynamic bodies (see src/render/objects.js) ----------
+#define MAX_OBJ 48
+uniform sampler2D uObj;        // 5 rows per body, one column per grid sample in s
+uniform int uObjCount, uObjS;
+uniform float uObjDs, uObjS0;
+uniform float uObjGain;   // radiance scale of bodies relative to the disk (see deriveScene)
+uniform vec4 uObjBound[MAX_OBJ]; // bounding sphere over the window (r < 0: absent)
+uniform vec4 uObjEmit[MAX_OBJ];  // T_rest, opacity per unit normalised chord, blink period, limb darkening
+uniform vec4 uObjAll;            // bounding sphere of everything
+uniform sampler2D uObjBlocks;    // (block, body): bounding sphere of grid samples [16b, 16b + 16]
+
+// Bounding sphere of body j around ray time s (w < 0: none).
+vec4 objBlock(int j, float s) {
+  float u = (s - uObjS0) / uObjDs;
+  if (u < 0.0 || u > float(uObjS - 1)) return vec4(0.0, 0.0, 0.0, -1.0);
+  int k = min(int(floor(u)), uObjS - 2);
+  return texelFetch(uObjBlocks, ivec2(k / 16, j), 0);
+}
+
+float segSphereDist(vec3 a, vec3 b, vec3 c) {
+  vec3 ab = b - a;
+  float t = clamp(dot(c - a, ab) / max(dot(ab, ab), 1e-30), 0.0, 1.0);
+  return length(a + t * ab - c);
+}
+
+// Centre (cubic Hermite in s) and largest/smallest semi-axes of body j at ray time s.
+bool objPos(int j, float s, out vec3 C, out vec4 U, out float Amax, out float Amin, out int k, out float f) {
+  float u = (s - uObjS0) / uObjDs;
+  if (u < 0.0 || u > float(uObjS - 1)) return false;
+  k = min(int(floor(u)), uObjS - 2);
+  f = u - float(k);
+  int row = j * 5;
+  vec4 a3 = texelFetch(uObj, ivec2(k, row + 2), 0), b3 = texelFetch(uObj, ivec2(k + 1, row + 2), 0);
+  if (a3.w < 0.5 || b3.w < 0.5) return false;
+  vec4 a0 = texelFetch(uObj, ivec2(k, row), 0), b0 = texelFetch(uObj, ivec2(k + 1, row), 0);
+  vec4 a1 = texelFetch(uObj, ivec2(k, row + 1), 0), b1 = texelFetch(uObj, ivec2(k + 1, row + 1), 0);
+  float h = uObjDs, f2 = f * f, f3 = f2 * f;
+  C = (2.0 * f3 - 3.0 * f2 + 1.0) * a0.xyz + (f3 - 2.0 * f2 + f) * h * (a1.yzw / a1.x)
+    + (-2.0 * f3 + 3.0 * f2) * b0.xyz + (f3 - f2) * h * (b1.yzw / b1.x);
+  U = mix(a1, b1, f);
+  Amax = max(texelFetch(uObj, ivec2(k, row + 3), 0).w, texelFetch(uObj, ivec2(k + 1, row + 3), 0).w);
+  Amin = min(texelFetch(uObj, ivec2(k, row + 4), 0).w, texelFetch(uObj, ivec2(k + 1, row + 4), 0).w);
+  return true;
+}
+
+// Largest step that cannot jump over a body (bodies move slower than light)
+// and that resolves its thinnest dimension once inside or close to it.
+float objStepLimit(vec3 x, float s, float h, float speed) {
+  float reach = h * speed;
+  if (length(x - uObjAll.xyz) > uObjAll.w + reach) return h;
+  for (int j = 0; j < MAX_OBJ; j++) {
+    if (j >= uObjCount) break;
+    vec4 B = uObjBound[j];
+    if (B.w < 0.0 || length(x - B.xyz) > B.w + reach) continue;
+    // Skip only when neither limit below can bind: d > 2·reach and d > A_max.
+    vec4 Bb = objBlock(j, s);
+    if (Bb.w < 0.0 || length(x - Bb.xyz) - Bb.w > max(2.0 * reach, Bb.w)) continue;
+    vec3 C; vec4 U; float Am, An, f; int k;
+    if (!objPos(j, s, C, U, Am, An, k, f)) continue;
+    float d = length(x - C) - Am;
+    h = min(h, 0.5 * max(d, An) / speed);
+    // Near a body, keep chords short against the ray's bending (error ∝ L²/r).
+    if (d < Am) h = min(h, 0.04 * ksRadius(x) / speed);
+  }
+  return h;
+}
+
+// Emission and absorption by every body crossed by the segment x0→x1
+// (ray times s0→s1). Each body is an ellipsoid in its rest frame; its motion
+// during the segment is linear (the steps near bodies are short).
+void objSegment(vec3 x0, vec3 x1, float s0, float s1, float E, vec3 p,
+                inout vec3 col, inout float trans, inout vec4 dbg) {
+  if (segSphereDist(x0, x1, uObjAll.xyz) > uObjAll.w) return;
+  vec3 dseg = x1 - x0;
+  float dsr = s1 - s0, sm = 0.5 * (s0 + s1);
+  for (int j = 0; j < MAX_OBJ; j++) {
+    if (j >= uObjCount) break;
+    vec4 B = uObjBound[j];
+    if (B.w < 0.0 || segSphereDist(x0, x1, B.xyz) > B.w) continue;
+    vec4 Bb = objBlock(j, sm);
+    if (Bb.w < 0.0 || segSphereDist(x0, x1, Bb.xyz) > Bb.w + abs(dsr)) continue;
+    vec3 C; vec4 U; float Am, An, f; int k;
+    if (!objPos(j, sm, C, U, Am, An, k, f)) continue;
+    int row = j * 5;
+    vec3 w1 = mix(texelFetch(uObj, ivec2(k, row + 2), 0).xyz, texelFetch(uObj, ivec2(k + 1, row + 2), 0).xyz, f);
+    vec3 w2 = mix(texelFetch(uObj, ivec2(k, row + 3), 0).xyz, texelFetch(uObj, ivec2(k + 1, row + 3), 0).xyz, f);
+    vec3 w3 = mix(texelFetch(uObj, ivec2(k, row + 4), 0).xyz, texelFetch(uObj, ivec2(k + 1, row + 4), 0).xyz, f);
+    vec3 V = U.yzw / U.x;
+    vec3 D0 = x0 - C - V * (s0 - sm);
+    vec3 dD = dseg - V * dsr;
+    vec3 P = vec3(dot(w1, D0), dot(w2, D0), dot(w3, D0));
+    vec3 Q = vec3(dot(w1, dD), dot(w2, dD), dot(w3, dD));
+    float qa = dot(Q, Q), qb = dot(P, Q), qc = dot(P, P) - 1.0;
+    float disc = qb * qb - qa * qc;
+    if (qa <= 0.0 || disc <= 0.0) continue;
+    float sq = sqrt(disc);
+    float t1 = max((-qb - sq) / qa, 0.0), t2 = min((-qb + sq) / qa, 1.0);
+    if (t2 <= t1) continue;
+    vec4 em = uObjEmit[j];
+    float chord = (t2 - t1) * sqrt(qa);          // rest-frame path in units of the semi-axes
+    float alpha = 1.0 - exp(-em.y * chord);
+    float g = -1.0 / (-E * U.x + dot(p, U.yzw));  // ν_obs/ν_emit
+    float mu = 1.0;
+    if (t1 > 0.0) mu = clamp(-dot(normalize(P + t1 * Q), Q) / sqrt(qa), 0.0, 1.0);
+    float limb = em.w > 0.5 ? (2.0 + 3.0 * mu) / 4.0 : 1.0;   // Eddington, flux-normalised
+    float blink = 1.0;
+    if (em.z > 0.0) {
+      float tau = mix(texelFetch(uObj, ivec2(k, row), 0).w, texelFetch(uObj, ivec2(k + 1, row), 0).w, f);
+      blink = fract(tau / em.z) < 0.15 ? 4.0 : 1.0;       // a clock flashing every em.z of proper time
+    }
+    col += trans * alpha * blackbody(g * em.x) * limb * blink * uObjGain;
+    // Validation data: body that makes the pixel half opaque, opacity-weighted g and s.
+    if (dbg.x == 0.0 && trans * (1.0 - alpha) < 0.5) dbg.x = float(j + 1);
+    dbg.yz += trans * alpha * vec2(g, s0 + t1 * dsr);
+    trans *= 1.0 - alpha;
+  }
+}
+
 // ---------- Main ----------
 void main() {
   vec2 frag = gl_FragCoord.xy + uJitter;
@@ -230,8 +350,13 @@ void main() {
   vec3 p = pu.yzw + f * lp * k;
 
   vec3 kx, kp;
-  geodesicRHS(x, p, E, kx, kp);
+  float kt;
+  geodesicRHS(x, p, E, kx, kp, kt);
   float h = 0.01 * max(1.0, r);
+  float sRay = 0.0;               // mirror time since leaving the camera
+  vec3 objCol = vec3(0.0);
+  float trans = 1.0;
+  vec4 objDbg = vec4(0.0);
   int result = 0; // 0 undetermined, 1 horizon, 2 disk, 3 sky
   float gOut = 0.0, rOut = 0.0, muOut = 0.0;
   vec3 skyDir = vec3(0.0);
@@ -243,21 +368,24 @@ void main() {
     steps = n;
     float rc = ksRadius(x);
     h = min(h, 0.5 * max(rc, 0.1));
+    if (uObjCount > 0) h = objStepLimit(x, sRay, h, length(kx) + kt);
 
     // --- DOPRI5 stages ---
     vec3 k1x = kx, k1p = kp, k2x, k2p, k3x, k3p, k4x, k4p, k5x, k5p, k6x, k6p, k7x, k7p;
-    geodesicRHS(x + h * (0.2 * k1x), p + h * (0.2 * k1p), E, k2x, k2p);
+    float t1 = kt, t2, t3, t4, t5, t6, t7;
+    geodesicRHS(x + h * (0.2 * k1x), p + h * (0.2 * k1p), E, k2x, k2p, t2);
     geodesicRHS(x + h * (3.0/40.0 * k1x + 9.0/40.0 * k2x),
-                p + h * (3.0/40.0 * k1p + 9.0/40.0 * k2p), E, k3x, k3p);
+                p + h * (3.0/40.0 * k1p + 9.0/40.0 * k2p), E, k3x, k3p, t3);
     geodesicRHS(x + h * (44.0/45.0 * k1x - 56.0/15.0 * k2x + 32.0/9.0 * k3x),
-                p + h * (44.0/45.0 * k1p - 56.0/15.0 * k2p + 32.0/9.0 * k3p), E, k4x, k4p);
+                p + h * (44.0/45.0 * k1p - 56.0/15.0 * k2p + 32.0/9.0 * k3p), E, k4x, k4p, t4);
     geodesicRHS(x + h * (19372.0/6561.0 * k1x - 25360.0/2187.0 * k2x + 64448.0/6561.0 * k3x - 212.0/729.0 * k4x),
-                p + h * (19372.0/6561.0 * k1p - 25360.0/2187.0 * k2p + 64448.0/6561.0 * k3p - 212.0/729.0 * k4p), E, k5x, k5p);
+                p + h * (19372.0/6561.0 * k1p - 25360.0/2187.0 * k2p + 64448.0/6561.0 * k3p - 212.0/729.0 * k4p), E, k5x, k5p, t5);
     geodesicRHS(x + h * (9017.0/3168.0 * k1x - 355.0/33.0 * k2x + 46732.0/5247.0 * k3x + 49.0/176.0 * k4x - 5103.0/18656.0 * k5x),
-                p + h * (9017.0/3168.0 * k1p - 355.0/33.0 * k2p + 46732.0/5247.0 * k3p + 49.0/176.0 * k4p - 5103.0/18656.0 * k5p), E, k6x, k6p);
+                p + h * (9017.0/3168.0 * k1p - 355.0/33.0 * k2p + 46732.0/5247.0 * k3p + 49.0/176.0 * k4p - 5103.0/18656.0 * k5p), E, k6x, k6p, t6);
     vec3 yx = x + h * (35.0/384.0 * k1x + 500.0/1113.0 * k3x + 125.0/192.0 * k4x - 2187.0/6784.0 * k5x + 11.0/84.0 * k6x);
     vec3 yp = p + h * (35.0/384.0 * k1p + 500.0/1113.0 * k3p + 125.0/192.0 * k4p - 2187.0/6784.0 * k5p + 11.0/84.0 * k6p);
-    geodesicRHS(yx, yp, E, k7x, k7p);
+    float ys = sRay + h * (35.0/384.0 * t1 + 500.0/1113.0 * t3 + 125.0/192.0 * t4 - 2187.0/6784.0 * t5 + 11.0/84.0 * t6);
+    geodesicRHS(yx, yp, E, k7x, k7p, t7);
     vec3 ex = h * (71.0/57600.0 * k1x - 71.0/16695.0 * k3x + 71.0/1920.0 * k4x - 17253.0/339200.0 * k5x + 22.0/525.0 * k6x - 0.025 * k7x);
     vec3 ep = h * (71.0/57600.0 * k1p - 71.0/16695.0 * k3p + 71.0/1920.0 * k4p - 17253.0/339200.0 * k5p + 22.0/525.0 * k6p - 0.025 * k7p);
     float scx = uRtol * max(rc, 1.0);
@@ -270,13 +398,17 @@ void main() {
       continue;
     }
 
+    // --- Bodies crossed during this step ---
+    if (uObjCount > 0 && trans > 1e-4) objSegment(x, yx, sRay, ys, E, p, objCol, trans, objDbg);
+
     // --- Disk crossing ---
     if (uDiskOn && x.z * yx.z <= 0.0 && x.z != yx.z) {
       vec3 hx = abs(x.z) < abs(yx.z) ? x : yx;
       vec3 hp = abs(x.z) < abs(yx.z) ? p : yp;
       for (int it = 0; it < 3; it++) {
         vec3 dx0, dp0;
-        geodesicRHS(hx, hp, E, dx0, dp0);
+        float dt0;
+        geodesicRHS(hx, hp, E, dx0, dp0, dt0);
         if (abs(dx0.z) < 1e-20) break;
         rk4(hx, hp, -hx.z / dx0.z, E);
       }
@@ -303,8 +435,9 @@ void main() {
     }
 
     x = yx;
+    sRay = ys;
     p = projectNull(yx, yp, E);
-    geodesicRHS(x, p, E, kx, kp);
+    geodesicRHS(x, p, E, kx, kp, kt);
     float rn = ksRadius(x);
     if (rn < uRHorizon * (1.0 - 1e-4)) { result = 1; rOut = rn; break; }
     if (rn > uREscape && dot(x, kx) > 0.0) {
@@ -317,6 +450,12 @@ void main() {
     h *= min(5.0, max(0.2, 0.9 * pow(max(err, EPS), -0.2)));
   }
 
+  if (uDebug == 2) {
+    // Body making the pixel half opaque (index + 1), opacity-weighted g and ray time s, total opacity.
+    float op = 1.0 - trans;
+    outColor = vec4(objDbg.x, objDbg.yz / max(op, 1e-30), op);
+    return;
+  }
   if (uDebug == 1) {
     // Raw data for validation against the float64 reference.
     float extra = result == 3 ? atan(skyDir.y, skyDir.x) : muOut;
@@ -336,6 +475,7 @@ void main() {
     col = sky(skyDir, gOut);
   }
 
+  col = objCol + trans * col;
   col = min(col * uRadianceScale, vec3(6e4)); // keep within half-float range
   if (uSampleIndex < 0.5) { outColor = vec4(col, 1.0); return; }
   vec3 prev = texelFetch(uPrev, ivec2(gl_FragCoord.xy), 0).rgb;
