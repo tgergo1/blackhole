@@ -62,6 +62,7 @@ export class ObjectsController {
   clear() {
     this.sim.clear();
     this.field.clear();
+    this.renderer.setObjects({ count: 0 }); // drop the uploaded snapshot and restart accumulation
     this.launches = [];
     this.errors = [];
     this.dirty = true;

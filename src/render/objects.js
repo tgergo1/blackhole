@@ -79,13 +79,14 @@ export class ObjectField {
   }
 
   /**
-   * Smallest mirror time simulated so far over bodies still being simulated
-   * (Infinity if none): the observer must not see past it.
+   * Mirror time reached by the least advanced body still being simulated
+   * (mirror time decreases as time runs, so this is the largest last-sample
+   * t′); Infinity if none. The observer must not see past it.
    */
   frontier() {
-    let m = Infinity;
-    for (const e of this.entities.values()) if (!e.ended && e.count) m = Math.min(m, e.data[(e.count - 1) * SAMPLE]);
-    return m;
+    let m = -Infinity;
+    for (const e of this.entities.values()) if (!e.ended && e.count) m = Math.max(m, e.data[(e.count - 1) * SAMPLE]);
+    return m === -Infinity ? Infinity : m;
   }
 
   clear() {
